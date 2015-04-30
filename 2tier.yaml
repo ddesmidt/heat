@@ -1,0 +1,222 @@
+heat_template_version: 2013-05-23
+
+# heat stack-create -f heat_demo.yaml <stack_name_here>
+description: |
+  A template that deploys a multi-tier topology: 2 Web, 1 DB.
+
+parameters:
+
+  flavor:
+    label: Server Size
+    type: string
+    description: |
+      flavor to use.
+    default: m1.small
+    constraints:
+      - allowed_values:
+        - m1.tiny
+        - m1.small
+        - m1.medium
+        - m1.large
+        description: |
+          Value must be one of 'm1.tiny', 'm1.small', 'm1.medium' or 'm1.large'.
+
+  key_name:
+    type: string
+    description: SSH key pair
+    default: VIO-SSH
+    constraints:
+      - custom_constraint: nova.keypair
+
+  image:
+    label: Name of image to use for servers
+    type: string
+    description: |
+      Server image used for all servers that are created as a part of this
+      deployment
+    # Use lightweight image for testing.
+    default: ubuntu-from-qcow
+
+  public_net:
+    label: Public Network ID for external connectivity
+    type: string
+    description: >
+      ID or name of public network for which floating IP addresses will be allocated
+    # Need to update this network UUID for each vPod.
+    default: '71a4c635-b386-45cf-b9fc-de9dcd1a1b0f'
+
+resources:
+
+  web_net:
+    type: OS::Neutron::Net
+    properties:
+      name: 'web-heat'
+
+  web_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: web_net }
+      cidr: 192.168.210.0/24
+      dns_nameservers: [ "10.34.35.11", "10.34.45.11" ]
+      enable_dhcp: true
+      gateway_ip: 192.168.210.1
+      allocation_pools:
+        - start: 192.168.210.100
+          end: 192.168.210.199
+
+  db_net:
+    type: OS::Neutron::Net
+    properties:
+      name: 'db-heat'
+
+  db_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      network_id: { get_resource: db_net }
+      cidr: 192.168.211.0/24
+      dns_nameservers: [ "10.34.35.11", "10.34.45.11" ]
+      enable_dhcp: true
+      gateway_ip: 192.168.211.1
+      allocation_pools:
+        - start: 192.168.211.100
+          end: 192.168.211.199
+
+  router:
+    type: OS::Neutron::Router
+    properties:
+      admin_state_up: true
+      name: heat-router
+
+  router_gw:
+    type: OS::Neutron::RouterGateway
+    properties:
+      network_id: { get_param: public_net}
+      router_id: { get_resource: router }
+
+  router_interface_web:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: web_subnet }
+
+  router_interface_db:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: db_subnet }
+
+  db_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: Allow sql traffic from web tier
+      name: db-security-group
+      rules:
+        - remote_ip_prefix: 192.168.211.0/24
+          protocol: tcp
+          port_range_min: 3306
+          port_range_max: 3306
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+
+  web_security_group:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      description: Allow web traffic from anywhere
+      name: web-security-group
+      rules:
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 80
+          port_range_max: 80
+        - remote_ip_prefix: 0.0.0.0/0
+          protocol: tcp
+          port_range_min: 22
+          port_range_max: 22
+
+  web01:
+    type: OS::Nova::Server      
+    properties:
+      flavor: { get_param: flavor }
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      name: web01
+      diskConfig: AUTO
+      networks:
+        - port: { get_resource: web01_port }
+
+  web01_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: web_net }
+      fixed_ips:
+        - subnet_id: { get_resource: web_subnet }
+      security_groups: [{ get_resource: web_security_group }]
+
+  web01_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net }
+      port_id: { get_resource: web01_port }
+
+  web02:
+    type: OS::Nova::Server      
+    properties:
+      flavor: { get_param: flavor }
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      name: web02
+      diskConfig: AUTO
+      networks:
+        - port: { get_resource: web02_port }
+
+  web02_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: web_net }
+      fixed_ips:
+        - subnet_id: { get_resource: web_subnet }
+      security_groups: [{ get_resource: web_security_group }]
+
+  web02_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net }
+      port_id: { get_resource: web02_port }
+
+  db01:
+    type: OS::Nova::Server      
+    properties:
+      flavor: { get_param: flavor }
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      name: db01
+      diskConfig: AUTO
+      networks:
+        - port: { get_resource: db01_port }
+
+  db01_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: db_net }
+      fixed_ips:
+        - subnet_id: { get_resource: db_subnet }
+      security_groups: [{ get_resource: db_security_group }]
+
+  db01_floating_ip:
+    type: OS::Neutron::FloatingIP
+    properties:
+      floating_network_id: { get_param: public_net }
+      port_id: { get_resource: db01_port }
+
+outputs:
+
+  web_url:
+    value:
+      str_replace:
+        template: "http://%server_ip%:8080"
+        params:
+          "%server_ip%": { get_attr: [ web01_floating_ip, floating_ip_address ] }
+    description: web01 floating ip
+
