@@ -1,0 +1,258 @@
+heat_template_version: 2016-10-14
+
+description: >
+  Dimi (ddesmidt@vmware.com) demo OpenStack NSX-T with:
+    . 4 servers (Ubuntu)
+    . 2 Logical Switches
+    . 1 Logical Router
+    . 1 Security Group allowing HTTPS + SSH
+	  . 1 LB (listener + pool + monitor)
+
+parameters:
+  key_name:
+    type: string
+    description: Name of a key pair to enable SSH access to instances.
+    default: dimi
+  image1:
+    type: string
+    description: Name of image1 of VMs.
+    default: Ubuntu-ESXi
+  image2:
+    type: string
+    description: Name of image2 of VMs.
+    default: Ubuntu-KVM
+  availability_zone1:
+    type: string
+    description: Name of availability_zone1.
+    default: vCenter
+  availability_zone2:
+    type: string
+    description: Name of availability_zone2.
+    default: KVM
+  public_net:
+    label: Public Network ID for external connectivity
+    type: string
+    description: >
+      ID or name of public network for which floating IP addresses will be allocated
+    # Need to update this network UUID for each vPod.
+    default: '7ad4e39a-7abb-4dd4-845d-d893944821eb'
+
+
+
+resources:
+  Tenant7-LS1_net:
+    type: OS::Neutron::Net
+    properties:
+      name: Tenant7-LS1
+
+  Tenant7-LS1_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: Tenant7-LS1_Net
+      network_id: { get_resource: Tenant7-LS1_net }
+      cidr: 10.37.1.0/24
+      dns_nameservers: [ "10.114.213.16" ]
+
+  Tenant7-LS2_net:
+    type: OS::Neutron::Net
+    properties:
+      name: Tenant7-LS2
+
+  Tenant7-LS2_subnet:
+    type: OS::Neutron::Subnet
+    properties:
+      name: Tenant7-LS2_Net
+      network_id: { get_resource: Tenant7-LS2_net }
+      cidr: 10.37.2.0/24
+      dns_nameservers: [ "10.114.213.16" ]
+
+  router:
+    type: OS::Neutron::Router
+    properties:
+      admin_state_up: true
+      external_gateway_info: {"enable_snat": True, "network": { get_param: public_net}, "external_fixed_ips": [{"ip_address": 10.114.213.107, "subnet": External3_Net}]}
+      name: Tenant7-LR1
+
+  router_interface1:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: Tenant7-LS1_subnet }
+
+  router_interface2:
+    type: OS::Neutron::RouterInterface
+    properties:
+      router_id: { get_resource: router }
+      subnet_id: { get_resource: Tenant7-LS2_subnet }
+
+
+  Tenant7-SG1:
+    type: OS::Neutron::SecurityGroup
+    properties:
+      name: Tenant7-SG1
+      rules:
+        - protocol: tcp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 443
+          port_range_max: 443
+        - protocol: tcp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 80
+          port_range_max: 80
+        - protocol: tcp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 22
+          port_range_max: 22
+        - protocol: tcp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 5001
+          port_range_max: 5001
+        - protocol: udp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 5001
+          port_range_max: 5001
+        - protocol: icmp
+          remote_ip_prefix: 0.0.0.0/0
+        - protocol: udp
+          remote_mode: remote_group_id
+
+
+  server1a_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: Tenant7-LS1_net }
+      fixed_ips:
+        - ip_address: 10.37.1.11
+      security_groups:
+        - { get_resource: Tenant7-SG1 }
+
+  server1a_instance:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: image1 }
+      flavor: m1.medium
+      key_name: { get_param: key_name }
+      availability_zone: { get_param: availability_zone1 }
+      networks:
+        - port: { get_resource: server1a_port }
+
+  server1a_floating_ip:
+    type: OS::Neutron::FloatingIP
+    depends_on: router_interface1
+    properties:
+      floating_network_id: { get_param: public_net }
+      port_id: { get_resource: server1a_port }
+      floating_ip_address: 10.114.213.108
+
+
+  server1b_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: Tenant7-LS1_net }
+      fixed_ips:
+        - ip_address: 10.37.1.12
+      security_groups:
+        - { get_resource: Tenant7-SG1 }
+
+  server1b_instance:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: image2 }
+      flavor: m1.small
+      key_name: { get_param: key_name }
+      availability_zone: { get_param: availability_zone2 }
+      networks:
+        - port: { get_resource: server1b_port }
+
+
+  server2a_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: Tenant7-LS2_net }
+      fixed_ips:
+        - ip_address: 10.37.2.11
+      security_groups:
+        - { get_resource: Tenant7-SG1 }
+
+  server2a_instance:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: image1 }
+      flavor: m1.medium
+      key_name: { get_param: key_name }
+      availability_zone: { get_param: availability_zone1 }
+      networks:
+        - port: { get_resource: server2a_port }
+
+  server2b_port:
+    type: OS::Neutron::Port
+    properties:
+      network_id: { get_resource: Tenant7-LS2_net }
+      fixed_ips:
+        - ip_address: 10.37.2.12
+      security_groups:
+        - { get_resource: Tenant7-SG1 }
+
+  server2b_instance:
+    type: OS::Nova::Server
+    properties:
+      image: { get_param: image2 }
+      flavor: m1.small
+      key_name: { get_param: key_name }
+      availability_zone: { get_param: availability_zone2 }
+      networks:
+        - port: { get_resource: server2b_port }
+
+
+  lbaas_lb:
+    type: OS::Neutron::LBaaS::LoadBalancer
+    properties:
+      name: Tenant7-LB1
+      vip_address: 10.114.213.109
+      vip_subnet: External3_Net
+
+  lbaas_listener:
+    type: OS::Neutron::LBaaS::Listener
+    properties:
+      loadbalancer: { get_resource: lbaas_lb }
+      name: Tenant7-Listener1
+      protocol: TCP
+      protocol_port: 80
+
+  lbaas_pool:
+    type: OS::Neutron::LBaaS::Pool
+    properties:
+      lb_algorithm: ROUND_ROBIN
+      listener: { get_resource: lbaas_listener }
+      name: Tenant7-Pool1
+      protocol: TCP
+
+  lbaas_pool_member1:
+    type: OS::Neutron::LBaaS::PoolMember
+    properties:
+      address: { get_attr: [ server1a_instance, networks, Tenant7-LS1, 0 ] }
+      pool: { get_resource: lbaas_pool }
+      protocol_port: 80
+      subnet: { get_resource: Tenant7-LS1_subnet }
+
+  lbaas_pool_member2:
+    type: OS::Neutron::LBaaS::PoolMember
+    properties:
+      address: { get_attr: [ server1b_instance, networks, Tenant7-LS1, 0 ] }
+      pool: { get_resource: lbaas_pool }
+      protocol_port: 80
+      subnet: { get_resource: Tenant7-LS1_subnet }
+
+  lbaas_monitor:
+    type: OS::Neutron::LBaaS::HealthMonitor
+    properties:
+      delay: 3
+      max_retries: 3
+      pool: { get_resource: lbaas_pool }
+      timeout: 3
+      type: TCP
+
+outputs:
+  instance_ip:
+    description: The IP address of the deployed instance
+    value: { get_attr: [ server1a_instance, networks, Tenant7-LS1, 0 ] }
